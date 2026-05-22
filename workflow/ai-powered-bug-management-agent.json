@@ -1,0 +1,564 @@
+{
+  "name": "AI powered triage agent",
+  "nodes": [
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.labels[0].name }}",
+                    "rightValue": "bug",
+                    "operator": {
+                      "type": "string",
+                      "operation": "contains"
+                    },
+                    "id": "********-****-****-****-************"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Bug Report"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "********-****-****-****-************",
+                    "leftValue": "={{ $json.labels[0].name }}",
+                    "rightValue": "enhancement",
+                    "operator": {
+                      "type": "string",
+                      "operation": "contains"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Feature Request"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        -816,
+        288
+      ],
+      "id": "********-****-****-****-************",
+      "name": "Switch"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -1264,
+        208
+      ],
+      "id": "********-****-****-****-************",
+      "name": "When clicking ‘Execute workflow’"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Process all incoming issues and return one output per input item.\nconst items = $input.all();\n\n// ---------- helpers ----------\nconst safe = (v, fb = \"—\") => (v === 0 || (v && v !== \"\")) ? v : fb;\n\nconst getRepoFullName = (repositoryUrl) => {\n  // e.g., https://api.github.com/repos/owner/repo\n  const m = String(repositoryUrl || \"\").match(/repos\\/([^/]+)\\/([^/]+)/i);\n  return m ? `${m[1]}/${m[2]}` : null;\n};\n\nconst getRepoHtmlUrl = (fullName) => (fullName ? `https://github.com/${fullName}` : null);\n\nconst truncate = (text, max = 500) => {\n  if (!text) return null;\n  const trimmed = String(text).replace(/\\s+/g, \" \").trim();\n  return trimmed.length <= max ? trimmed : trimmed.slice(0, max - 1) + \"…\";\n};\n\nconst formatDate = (iso) => {\n  if (!iso) return \"—\";\n  try {\n    const d = new Date(iso);\n    return d.toISOString().replace(\"T\", \" \").replace(\"Z\", \" UTC\");\n  } catch {\n    return iso;\n  }\n};\n\nconst sumReactions = (reactionsObj) => {\n  if (!reactionsObj || typeof reactionsObj !== \"object\") return 0;\n  const keys = [\"+1\", \"-1\", \"laugh\", \"hooray\", \"confused\", \"heart\", \"rocket\", \"eyes\"];\n  return keys.reduce((acc, k) => acc + (Number(reactionsObj[k]) || 0), 0);\n};\n\n// Build blocks for a single issue JSON (shape = your GitHub issue object)\nconst buildBlocks = (issue) => {\n  const title       = safe(issue.title, \"Untitled issue\");\n  const number      = safe(issue.number, \"—\");\n  const state       = safe(issue.state, \"—\");\n  const issueUrl    = issue.html_url || \"https://github.com\";\n  const createdAt   = formatDate(issue.created_at);\n  const updatedAt   = formatDate(issue.updated_at);\n  const reporter    = (issue.user && issue.user.login) ? issue.user.login : \"unknown\";\n  const labels      = Array.isArray(issue.labels) ? issue.labels : [];\n  const labelsText  = labels.length ? labels.map(l => `\\`${l.name}\\``).join(\" \") : \"—\";\n  const reactions   = sumReactions(issue.reactions);\n  const repoFull    = getRepoFullName(issue.repository_url);\n  const repoHtml    = getRepoHtmlUrl(repoFull);\n  const bodyPreview = truncate(issue.body, 600);\n\n  const blocks = [];\n\n  // Header\n  blocks.push({\n    type: \"header\",\n    text: { type: \"plain_text\", text: `🐛 Bug #${number}: ${title}`, emoji: true }\n  });\n\n  // Repo + Reporter\n  blocks.push({\n    type: \"section\",\n    fields: [\n      { type: \"mrkdwn\", text: `*Repository:*\\n${repoHtml ? `<${repoHtml}|${repoFull}>` : safe(repoFull)}` },\n      { type: \"mrkdwn\", text: `*Submitted By:*\\n${reporter}` }\n    ]\n  });\n\n  // Labels + State\n  blocks.push({\n    type: \"section\",\n    fields: [\n      { type: \"mrkdwn\", text: `*Labels:*\\n${labelsText}` },\n      { type: \"mrkdwn\", text: `*State:*\\n${String(state).toUpperCase()}` }\n    ]\n  });\n\n  // Timestamps + Reactions\n  blocks.push({\n    type: \"context\",\n    elements: [\n      { type: \"mrkdwn\", text: `*Created:* ${createdAt}` },\n      { type: \"mrkdwn\", text: `*Updated:* ${updatedAt}` },\n      { type: \"mrkdwn\", text: `*Reactions:* ${reactions}` }\n    ]\n  });\n\n  // Body preview\n  if (bodyPreview) {\n    blocks.push({ type: \"divider\" });\n    blocks.push({\n      type: \"section\",\n      text: { type: \"mrkdwn\", text: `*Description*\\n${bodyPreview}` }\n    });\n  }\n\n  // Actions\n  blocks.push({\n    type: \"actions\",\n    elements: [\n      { type: \"button\", text: { type: \"plain_text\", text: \"View Issue\" }, url: issueUrl, style: \"primary\" },\n      ...(repoHtml ? [{ type: \"button\", text: { type: \"plain_text\", text: \"View Repo\" }, url: repoHtml }] : [])\n    ]\n  });\n\n  return { text: `Bug #${number}: ${title}`, blocks };\n};\n\n// ---------- map over all inputs ----------\nreturn items.map((it) => {\n  const issue = it?.json || {};\n  const payload = buildBlocks(issue);\n  return {\n    json: {\n      text: payload.text,                 // nice fallback for Slack\n      slackBlock: { blocks: payload.blocks } // keep your existing shape\n    }\n  };\n});\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -592,
+        112
+      ],
+      "id": "********-****-****-****-************",
+      "name": "Code"
+    },
+    {
+      "parameters": {
+        "resource": "boardItem",
+        "boardId": "BOARD_ID",
+        "groupId": "topics",
+        "name": "={{ $json.text }}",
+        "additionalFields": {
+          "columnValues": "{\n\"column_id\": \"color_mkv9qp71\", \"value\": \"Medium\"\n}"
+        }
+      },
+      "type": "n8n-nodes-base.mondayCom",
+      "typeVersion": 1,
+      "position": [
+        -368,
+        208
+      ],
+      "id": "********-****-****-****-************",
+      "name": "Create an item in a board's group"
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentURL": "=DOCUMENT_URL",
+        "actionsUi": {
+          "actionFields": [
+            {
+              "action": "insert",
+              "text": "=- BUG: {{ $('Code').item.json.text }} | Task ID: {{ $json.id }} \n"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.googleDocs",
+      "typeVersion": 2,
+      "position": [
+        64,
+        0
+      ],
+      "id": "********-****-****-****-************",
+      "name": "Update a document"
+    },
+    {
+      "parameters": {
+        "select": "user",
+        "user": {
+          "__rl": true,
+          "value": "SLACK_USER_ID",
+          "mode": "id"
+        },
+        "text": "=A new issue: {{ $json.title }} has been reported by {{ $json.user.login\n}}",
+        "otherOptions": {}
+      },
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.3,
+      "position": [
+        -592,
+        304
+      ],
+      "id": "********-****-****-****-************",
+      "name": "Feature Request",
+      "webhookId": "********-****-****-****-************"
+    },
+    {
+      "parameters": {
+        "select": "user",
+        "user": {
+          "__rl": true,
+          "value": "SLACK_USER_ID",
+          "mode": "id"
+        },
+        "text": "=A new issue: {{ $json.title }} has been reported by {{ $json.user.login\n}}",
+        "otherOptions": {}
+      },
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.3,
+      "position": [
+        -592,
+        496
+      ],
+      "id": "********-****-****-****-************",
+      "name": "Unclassified",
+      "webhookId": "********-****-****-****-************"
+    },
+    {
+      "parameters": {
+        "select": "user",
+        "user": {
+          "__rl": true,
+          "value": "SLACK_USER_ID",
+          "mode": "id"
+        },
+        "messageType": "block",
+        "blocksUi": "={{ $json.slackBlock }}",
+        "text": "={{ $json.text }}",
+        "otherOptions": {}
+      },
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.3,
+      "position": [
+        -368,
+        16
+      ],
+      "id": "********-****-****-****-************",
+      "name": "Bug report",
+      "webhookId": "********-****-****-****-************"
+    },
+    {
+      "parameters": {
+        "owner": {
+          "__rl": true,
+          "value": "https://github.com/StilyanaK",
+          "mode": "url"
+        },
+        "repository": {
+          "__rl": true,
+          "value": "https://github.com/StilyanaK/test-repo",
+          "mode": "url"
+        },
+        "events": [
+          "issues"
+        ],
+        "options": {}
+      },
+      "type": "n8n-nodes-base.githubTrigger",
+      "typeVersion": 1,
+      "position": [
+        -1040,
+        400
+      ],
+      "id": "********-****-****-****-************",
+      "name": "Github Trigger",
+      "webhookId": "********-****-****-****-************",
+      "credentials": {
+        "githubApi": {
+          "id": "GITHUB_CREDENTIAL_ID",
+          "name": "GitHub account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "repository",
+        "owner": {
+          "__rl": true,
+          "value": "StilyanaK",
+          "mode": "name"
+        },
+        "repository": {
+          "__rl": true,
+          "value": "test-repo",
+          "mode": "name"
+        },
+        "limit": 1,
+        "getRepositoryIssuesFilters": {}
+      },
+      "type": "n8n-nodes-base.github",
+      "typeVersion": 1.1,
+      "position": [
+        -1040,
+        208
+      ],
+      "id": "********-****-****-****-************",
+      "name": "Get issues of a repository",
+      "webhookId": "********-****-****-****-************",
+      "credentials": {
+        "githubApi": {
+          "id": "GITHUB_CREDENTIAL_ID",
+          "name": "GitHub account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=You are an expert engineering assistant working with two tools\n- a vector search over GitHub issues\n- a get_on_call_engineer function to get the oncall engineer \n\n## Retrieval rules\n- Generate 2–4 focused queries from the bug title/body (error strings, components, versions).\n- **Group (de-duplicate) by issue ID** using the `metadata.id` field. \n- For each remaining candidate, read its metadata: include **title** and **id** (and **url** if available). If a `state` field is present, report it as **Open/Closed**; otherwise say \"Unknown\". Do not guess.\n\n## Priority rubric\n- High: customer-visible outage, data loss, security issue, crash loop, or blocks many users / critical workflow / regression in latest release.\n- Medium: important but has a workaround, limited scope, or non-critical component.\n- Low: cosmetic, docs-only, or minor edge case.\n\n## Oncall lookup\n- Use the get_on_call_engineer tool to find out who is on call\n\n## Output format\nReturn **only** valid JSON with exactly three keys:\n- \"analysis\": a concise explanation and, if any, a bullet list of unique potential duplicates formatted as:\n  `- <Title> — <ID> — <Status>`\n  Optionally append URL if present in metadata.\n- \"priority\": one of \"High\", \"Medium\", or \"Low\".\n- \"oncall\": the output of the get_on_call_engineer function\n\n## Constraints\n- Do not include anything outside the JSON object.\n- Keep analysis factual and grounded in retrieved items; do not fabricate titles, IDs, URLs, or statuses.\n- If no close duplicates remain after de-duplication, state: \"No close duplicates found.\"\n\nBug title: {{ $('When Executed by Another Workflow').item.json.title }}\nBug body: {{ $('When Executed by Another Workflow').item.json.body }}",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        -16,
+        400
+      ],
+      "id": "********-****-****-****-************",
+      "name": "AI Agent"
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "gpt-5-mini"
+        },
+        "builtInTools": {},
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.3,
+      "position": [
+        -144,
+        624
+      ],
+      "id": "********-****-****-****-************",
+      "name": "OpenAI Chat Model",
+      "credentials": {
+        "openAiApi": {
+          "id": "OPENAI_CREDENTIAL_ID",
+          "name": "OpenAI account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.monday.com/v2",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "mondayComApi",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "query",
+              "value": "=mutation ChangeStatus{\n  change_simple_column_value(\n    board_id: BOARD_ID\n    item_id: {{ $('Create an item in a board\\'s group').item.json.id }}\n    column_id: \"color_mkv9qp71\"\n    value: \"{{ $json.output.parseJson().oncall }}\"\n  ) {\n    id\n  }\n}"
+            },
+            {
+              "name": "query",
+              "value": "=mutation AssignPerson {\n  change_simple_column_value(\n    board_id: BOARD_ID\n    item_id: {{ $('Create an item in a board\\'s group').item.json.id }}\n    column_id: \"person\"\n    value: \"{{ $json.output.parseJson().oncall }}\"\n  ) {\n    id\n  }\n}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        480,
+        400
+      ],
+      "id": "********-****-****-****-************",
+      "name": "Set Item Priority",
+      "credentials": {
+        "mondayComApi": {
+          "id": "MONDAYCOM_CREDENTIAL_ID",
+          "name": "Monday.com account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "retrieve-as-tool",
+        "toolDescription": "Retrieve semantically similar GitHub issues from a vector store.\n\nInput:\n- query (string, required) – bug title/body text.\n\nOutput: \n- array of JSON results\n\nUsage notes:\n- Use the URL (e.g., repo#number) to group results and avoid duplicates.\n- Use state if present (Open/Closed); don’t guess if missing.",
+        "memoryKey": {
+          "__rl": true,
+          "mode": "list",
+          "value": "vector_store_key"
+        },
+        "topK": 3
+      },
+      "type": "@n8n/n8n-nodes-langchain.vectorStoreInMemory",
+      "typeVersion": 1.3,
+      "position": [
+        -16,
+        624
+      ],
+      "id": "********-****-****-****-************",
+      "name": "Simple Vector Store"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.embeddingsOpenAi",
+      "typeVersion": 1.2,
+      "position": [
+        64,
+        832
+      ],
+      "id": "********-****-****-****-************",
+      "name": "Embeddings OpenAI",
+      "credentials": {
+        "openAiApi": {
+          "id": "OPENAI_CREDENTIALS_ID",
+          "name": "OpenAI account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "endpointUrl": "http://localhost:5678/mcp/MCP_ENDPOINT",
+        "authentication": "headerAuth",
+        "include": "selected",
+        "includeTools": "get_on_call_engineer",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.mcpClientTool",
+      "typeVersion": 1.2,
+      "position": [
+        272,
+        624
+      ],
+      "id": "********-****-****-****-************",
+      "name": "MCP Client",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "HEADER_AUTH_ID",
+          "name": "Header Auth account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Switch": {
+      "main": [
+        [
+          {
+            "node": "Code",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Feature Request",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Unclassified",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "When clicking ‘Execute workflow’": {
+      "main": [
+        [
+          {
+            "node": "Get issues of a repository",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code": {
+      "main": [
+        [
+          {
+            "node": "Bug report",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Create an item in a board's group",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create an item in a board's group": {
+      "main": [
+        [
+          {
+            "node": "Update a document",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Github Trigger": {
+      "main": [
+        [
+          {
+            "node": "Switch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get issues of a repository": {
+      "main": [
+        [
+          {
+            "node": "Switch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent": {
+      "main": [
+        [
+          {
+            "node": "Set Item Priority",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Simple Vector Store": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Embeddings OpenAI": {
+      "ai_embedding": [
+        [
+          {
+            "node": "Simple Vector Store",
+            "type": "ai_embedding",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "MCP Client": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "********-****-****-****-************",
+  "meta": {
+    "instanceId": "****************************************************************"
+  },
+  "id": "INSTANCE_ID",
+  "tags": []
+}
